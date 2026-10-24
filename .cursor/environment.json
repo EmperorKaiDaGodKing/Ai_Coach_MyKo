@@ -1,0 +1,5 @@
+{
+  "name": "Ai Coach MyKo",
+  "user": "ubuntu",
+  "install": "if [ -f .cursor/cloud-install.sh ]; then bash .cursor/cloud-install.sh; elif [ -f repos/Ai_Coach_MyKo/.cursor/cloud-install.sh ]; then bash repos/Ai_Coach_MyKo/.cursor/cloud-install.sh; elif [ -f Ai_Coach_MyKo/.cursor/cloud-install.sh ]; then bash Ai_Coach_MyKo/.cursor/cloud-install.sh; else echo \"cloud-install.sh not found from $(pwd)\" >&2; ls -la; exit 1; fi"
+}
