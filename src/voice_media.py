@@ -4,6 +4,7 @@ import json
 import shutil
 import subprocess
 import uuid
+import wave
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -51,6 +52,20 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _duration_from_wav(path: Path) -> Optional[float]:
+    try:
+        with wave.open(str(path), "rb") as wav:
+            channels = wav.getnchannels()
+            sample_width = wav.getsampwidth()
+            frame_rate = wav.getframerate()
+            frames = wav.getnframes()
+            if frame_rate <= 0:
+                return None
+            return frames / frame_rate
+    except (OSError, EOFError, ValueError):
+        return None
+
+
 def _ffprobe_duration(path: Path) -> Optional[float]:
     ffprobe = shutil.which("ffprobe")
     if not ffprobe:
@@ -58,7 +73,16 @@ def _ffprobe_duration(path: Path) -> Optional[float]:
 
     try:
         result = subprocess.run(
-            [ffprobe, "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", str(path)],
+            [
+                ffprobe,
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+                str(path),
+            ],
             capture_output=True,
             text=True,
             check=False,
@@ -79,6 +103,17 @@ def _detect_media_type(path: Path) -> str:
     raise ValueError(f"Unsupported media type: {extension}")
 
 
+def _media_duration(path: Path) -> float:
+    duration = _ffprobe_duration(path)
+    if duration is not None:
+        return float(duration)
+    if path.suffix.lower() == ".wav":
+        wav_duration = _duration_from_wav(path)
+        if wav_duration is not None:
+            return float(wav_duration)
+    return 0.0
+
+
 def validate_media(file_path: str | Path) -> Dict[str, Any]:
     """Validate a media file and return metadata, including duration in seconds."""
     candidate = Path(file_path)
@@ -92,10 +127,7 @@ def validate_media(file_path: str | Path) -> Dict[str, Any]:
         )
 
     media_type = _detect_media_type(candidate)
-    duration = _ffprobe_duration(candidate)
-
-    if duration is None:
-        duration = 0.0
+    duration = _media_duration(candidate)
 
     if duration > MAX_MEDIA_SECONDS:
         raise ValueError(
@@ -169,11 +201,7 @@ def transcribe_audio(path: str | Path) -> Dict[str, Any]:
 
 
 def generate_voice_reply(text: str, voice: str = "default") -> str:
-    """Create a fake reply artifact path and return its absolute path.
-
-    In a production app, this would call a TTS engine. For this repo, it just creates a
-    placeholder metadata entry for the voice reply output and saves it to the replies folder.
-    """
+    """Create a placeholder voice reply file and return its path."""
     if not text or not text.strip():
         raise ValueError("Voice reply text cannot be empty")
 
@@ -224,7 +252,52 @@ def list_recent_media(limit: int = 20) -> List[Dict[str, Any]]:
     return list(reversed(entries))[: max(1, limit)]
 
 
+def create_test_wav(path: str | Path, seconds: int = 1) -> Path:
+    """Create a tiny valid WAV file for dry testing without requiring FFmpeg."""
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+
+    sample_rate = 8000
+    total_frames = sample_rate * seconds
+    amplitude = 32767
+
+    with wave.open(str(target), "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(sample_rate)
+
+        # generate a simple sine-like wave by writing 16-bit PCM values
+        data = bytearray()
+        for i in range(total_frames):
+            value = int(amplitude * 0.5 * __import__("math").sin(2 * __import__("math").pi * 440 * i / sample_rate))
+            data.extend(int(value).to_bytes(2, byteorder="little", signed=True))
+        wav_file.writeframes(data)
+
+    return target
+
+
+def run_dry_test() -> Dict[str, Any]:
+    """Run a complete dry test flow for upload validation and reply generation."""
+    _ensure_storage()
+    test_path = UPLOAD_ROOT / "dry_test_audio.wav"
+    create_test_wav(test_path, seconds=1)
+
+    validated = validate_media(test_path)
+    uploaded = save_upload(test_path)
+    reply_path = generate_voice_reply("Frank dry test reply: voice enabled and media ready.")
+    recent = list_recent_media(5)
+
+    return {
+        "validated": validated,
+        "uploaded": uploaded,
+        "reply_path": reply_path,
+        "recent_media": recent,
+    }
+
+
 if __name__ == "__main__":
     print("Media storage root:", MEDIA_ROOT)
     print("Allowed extensions:", sorted(ALLOWED_EXTENSIONS))
     print("Max clip duration:", MAX_MEDIA_SECONDS, "seconds")
+    print(json.dumps(run_dry_test(), indent=2))
+
